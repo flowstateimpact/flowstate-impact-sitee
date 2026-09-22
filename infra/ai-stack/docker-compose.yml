@@ -1,0 +1,153 @@
+# Flowstate AI stack — control plane.
+# Run on a CPU VM. GPU services (ComfyUI, vLLM) live in the `gpu` profile and
+# are meant to run on a separate GPU host: `docker compose --profile gpu up comfyui`.
+#
+#   cp .env.example .env && docker compose up -d
+#
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [litellm, librechat]
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: litellm
+    volumes: [pg_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 10s
+      retries: 5
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+
+  # ---- Gateway: one OpenAI-compatible endpoint for every model -------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
+      STORE_MODEL_IN_DB: "True"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports: ["4000:4000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  # ---- Custom UI: LibreChat (agents, MCP, OIDC, per-user model perms) ------
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    volumes: [mongo_data:/data/db]
+
+  librechat:
+    image: ghcr.io/danny-avila/librechat:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3080"
+      MONGO_URI: mongodb://mongodb:27017/LibreChat
+      # LibreChat reads its custom endpoints from librechat.yaml
+      CONFIG_PATH: /app/librechat.yaml
+      ENDPOINTS: custom,agents
+      ALLOW_REGISTRATION: "false"
+    volumes:
+      - ./librechat.yaml:/app/librechat.yaml:ro
+      - lc_images:/app/client/public/images
+      - lc_uploads:/app/uploads
+    ports: ["3080:3080"]
+    depends_on: [mongodb, litellm]
+
+  # ---- Object storage for generated media --------------------------------
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes: [minio_data:/data]
+    ports: ["9000:9000", "9001:9001"]
+
+  # ---- Example tenant agent: Hermes Agent on Kimi K3 via the gateway -------
+  # Duplicate this block per client with its own LiteLLM virtual key.
+  hermes-tenant-example:
+    image: ghcr.io/nousresearch/hermes-agent:latest
+    restart: unless-stopped
+    profiles: [tenants]
+    environment:
+      OPENAI_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${TENANT_EXAMPLE_KEY}
+      HERMES_MODEL: kimi-k3
+    volumes:
+      - hermes_example:/root/.hermes
+    depends_on: [litellm]
+
+  # ==== GPU host services (profile: gpu) ===================================
+  comfyui:
+    build: ./comfyui
+    profiles: [gpu]
+    restart: unless-stopped
+    command: ["--listen", "0.0.0.0", "--port", "8188", "--multi-user", "--highvram"]
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+    volumes:
+      - comfy_models:/opt/ComfyUI/models
+      - comfy_output:/opt/ComfyUI/output
+      - comfy_user:/opt/ComfyUI/user
+    ports: ["8188:8188"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+
+  vllm-hermes:
+    image: vllm/vllm-openai:latest
+    profiles: [gpu]
+    restart: unless-stopped
+    command: >
+      --model NousResearch/Hermes-4.3-36B
+      --served-model-name hermes-4.3-36b
+      --max-model-len 65536
+      --gpu-memory-utilization 0.92
+      --enable-auto-tool-choice --tool-call-parser hermes
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+    volumes: [hf_cache:/root/.cache/huggingface]
+    ports: ["8000:8000"]
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+
+volumes:
+  caddy_data: {}
+  pg_data: {}
+  mongo_data: {}
+  minio_data: {}
+  lc_images: {}
+  lc_uploads: {}
+  hermes_example: {}
+  comfy_models: {}
+  comfy_output: {}
+  comfy_user: {}
+  hf_cache: {}
