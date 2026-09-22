@@ -1,0 +1,99 @@
+# LiteLLM gateway routing. One alias per model; providers behind an alias are
+# load-balanced and fall back in order. Docs: https://docs.litellm.ai/docs/proxy/configs
+model_list:
+  # ---- Kimi K3 (flat $3/$15 everywhere; only speed differs) ----------------
+  - model_name: kimi-k3
+    litellm_params:
+      model: fireworks_ai/accounts/fireworks/models/kimi-k3
+      api_key: os.environ/FIREWORKS_API_KEY
+    model_info: { priority: 1 }
+  - model_name: kimi-k3
+    litellm_params:
+      model: openai/kimi-k3               # Moonshot is OpenAI-compatible
+      api_base: https://api.moonshot.ai/v1
+      api_key: os.environ/MOONSHOT_API_KEY
+    model_info: { priority: 2 }
+  - model_name: kimi-k3
+    litellm_params:
+      model: openrouter/moonshotai/kimi-k3
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: { priority: 3 }
+  - model_name: kimi-k3-batch              # offline jobs, cheaper
+    litellm_params:
+      model: openrouter/moonshotai/kimi-k3:batch
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ---- Claude (API keys on Commercial Terms; never Max-plan OAuth) ---------
+  - model_name: claude-fable-5-1
+    litellm_params:
+      model: anthropic/claude-fable-5-1
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-opus-5
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ---- Hermes 4 family ------------------------------------------------------
+  - model_name: hermes-4.3-36b               # self-hosted on the GPU box
+    litellm_params:
+      model: openai/hermes-4.3-36b
+      api_base: http://vllm-hermes:8000/v1
+      api_key: none
+  - model_name: hermes-4-405b                # hosted
+    litellm_params:
+      model: openrouter/nousresearch/hermes-4-405b
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ---- HuggingFace models via HF Inference Providers -----------------------
+  - model_name: hf-qwen3-coder
+    litellm_params:
+      model: huggingface/together/Qwen/Qwen3-Coder-480B-A35B-Instruct
+      api_key: os.environ/HF_TOKEN
+
+  # ---- Aliases used by client tiers ----------------------------------------
+  - model_name: tier-pro
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: tier-standard
+    litellm_params:
+      model: openai/kimi-k3
+      api_base: https://api.moonshot.ai/v1
+      api_key: os.environ/MOONSHOT_API_KEY
+  - model_name: tier-basic
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+router_settings:
+  routing_strategy: latency-based-routing   # picks the fastest healthy Kimi provider
+  num_retries: 2
+  allowed_fails: 3
+  cooldown_time: 60
+  fallbacks:
+    - { kimi-k3: ["claude-opus-5"] }        # if every Kimi provider is down
+    - { claude-fable-5-1: ["claude-opus-5"] }
+  redis_host: os.environ/REDIS_HOST
+  redis_port: os.environ/REDIS_PORT
+
+litellm_settings:
+  drop_params: true
+  cache: true
+  cache_params: { type: redis }
+  success_callback: ["prometheus"]         # /metrics for Grafana
+  max_budget: 5000                         # global monthly ceiling, USD
+  budget_duration: 30d
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
+  enforce_user_param: false

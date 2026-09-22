@@ -1,0 +1,14 @@
+# Replace the hostnames. Basic auth protects ComfyUI until you add OIDC.
+chat.{$DOMAIN} {
+  reverse_proxy librechat:3080
+}
+api.{$DOMAIN} {
+  reverse_proxy litellm:4000
+}
+media.{$DOMAIN} {
+  basic_auth {
+    # caddy hash-password --plaintext '<password>'
+    team {$COMFY_BASIC_AUTH_HASH}
+  }
+  reverse_proxy {$COMFY_HOST}:8188
+}

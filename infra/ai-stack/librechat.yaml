@@ -1,0 +1,16 @@
+version: 1.2.1
+cache: true
+endpoints:
+  custom:
+    - name: "Flowstate Gateway"
+      apiKey: "${LIBRECHAT_GATEWAY_KEY}"
+      baseURL: "http://litellm:4000/v1"
+      models:
+        default: ["claude-opus-5", "claude-fable-5-1", "claude-sonnet-5", "kimi-k3", "hermes-4.3-36b", "hf-qwen3-coder"]
+        fetch: true
+      titleConvo: true
+      titleModel: "claude-haiku-4-5"
+      modelDisplayLabel: "Flowstate"
+      # LibreChat forwards the user id so LiteLLM can track spend per person
+      headers:
+        x-litellm-end-user: "{{LIBRECHAT_USER_ID}}"
